@@ -6,7 +6,7 @@ s.headers.update({'X-API-key': 'UE4DD4XK'}) # API Key from YOUR RIT Client
 
 MAX_LONG_EXPOSUE = 25000
 MAX_SHOT_EXPOSUE = -25000
-ORDER_LIMIT = 500
+ORDER_LIMIT = 250
 
 u_case = 'http://localhost:9999/v1/case'
 u_book = 'http://localhost:9999/v1/securities/book'
@@ -14,6 +14,7 @@ u_securities = 'http://localhost:9999/v1/securities'
 u_tas = 'http://localhost:9999/v1/securities/tas'
 u_orders = 'http://localhost:9999/v1/orders'
 u_news = 'http://localhost:9999/v1/news'
+u_cancel = 'http://localhost:9999/v1/commands/cancel'
 
 ##################### CONSTANTS & INITIAL #####################
 
@@ -78,6 +79,12 @@ def get_order_status(order_id):
     if resp.ok:
         order = resp.json()
         return order['status']
+    
+def get_ticker_list(): #return a full list of the securities on the market
+    resp = s.get(u_securities)
+    securities = resp.json()
+    ticker_list = [item['ticker'] for item in securities]
+    return ticker_list
 ##################### DEFAULT FUNCTIONS #####################
 
 def is_buyer_market(ticker):
@@ -92,18 +99,30 @@ def is_buyer_market(ticker):
     for item in book['asks']: #pull the total bid volume of the ticker
         ask_vol += item['quantity'] - item['quantity_filled']
 
-    #return bid_vol < ask_vol
-    print('The bid vol is ' + str(bid_vol) + ' and the ask vol is ' + str(ask_vol))
+    return bid_vol < ask_vol
+    print('The bid vol for ' + ticker + ' is ' + str(bid_vol) + ' and the ask vol is ' + str(ask_vol))
 
 
-
-
+def over_protection(limit):
+    securities = s.get(u_securities).json()
+    threshold = get_position() / limit
+    
+    if threshold > 0.95:
+        resp = s.post(u_cancel, params = {'all': 1})
+        for item in securities:
+            position = item['position']
+            if position > 0.0:
+                resp = s.post(u_orders, params = {'ticker': item['ticker'], 'type': 'MARKET', 'quantity': abs(position) * 0.2, 'action': 'SELL'})
+                print(str(item['ticker']) + 'Long Position Exploded, performing short')
+            elif position < 0.0:
+                resp = s.post(u_orders, params = {'ticker': item['ticker'], 'type': 'MARKET', 'quantity': abs(position) * 0.2, 'action': 'BUY'})
+                print(str(item['ticker']) + 'Short Position Exploded, performing long')
 
 
 ##################### STRAT FUNCTION #####################
 def main():
     tick, status = get_tick()
-    ticker_list = ['CNR', 'RY', 'AC']
+    ticker_list = get_ticker_list()
     
     while status == 'ACTIVE':
         for i in range(3):
@@ -111,18 +130,16 @@ def main():
             position = get_position()
             best_bid_price, best_ask_price = get_bid_ask(ticker_symbol)
             
-            #print(position)
-            print(is_buyer_market('CNR'))
-            if position < MAX_LONG_EXPOSUE:
-                resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': ticker_symbol, 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': best_bid_price - 0.5, 'action': 'BUY'})
+            if is_buyer_market(ticker_symbol):
+                resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': ticker_symbol, 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': best_bid_price, 'action': 'BUY'})
+                print('Longing ' + str(ticker_symbol))
+            else:
+                resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': ticker_symbol, 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': best_ask_price, 'action': 'SELL'})
+                print('Shorting ' + str(ticker_symbol))
             
-            if position > MAX_SHOT_EXPOSUE:
-                resp = s.post('http://localhost:9999/v1/orders', params = {'ticker': ticker_symbol, 'type': 'LIMIT', 'quantity': ORDER_LIMIT, 'price': best_bid_price + 0.5, 'action': 'SELL'})
-            
-            sleep(0.5)
-            
-            
-        s.post('http://localhost:9999/v1/commands/cancel', params = {'all': 1})
+            sleep (0.5)
+            over_protection(MAX_LONG_EXPOSUE)
+        
         tick, status = get_tick()
         
 if __name__ == '__main__':
